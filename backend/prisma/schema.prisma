@@ -1,0 +1,408 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  VIEWER
+}
+
+enum Environment {
+  PROD
+  STAGING
+  DEV
+}
+
+enum ChangeType {
+  DEPLOYMENT
+  CONFIG_CHANGE
+  IAM_CHANGE
+  SECURITY_GROUP_CHANGE
+  DB_CHANGE
+  SCALING
+  VERSION_CHANGE
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  FAILED
+  PENDING
+}
+
+model Organization {
+  id               String            @id @default(uuid())
+  name             String
+  industry         String?
+  teamSize         String?
+  externalId       String            @unique @default(uuid())
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  users            User[]
+  enabledServices  EnabledService[]
+  awsConnections   AwsConnection[]
+  services         Service[]
+  resources        Resource[]
+  events           Event[]
+  changes          Change[]
+  metrics          Metric[]
+  logs             Log[]
+  incidents        Incident[]
+  riskScores       RiskScore[]
+  securityFindings SecurityFinding[]
+  aiAnalyses       AiAnalysis[]
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  email          String       @unique
+  passwordHash   String       @map("password_hash")
+  name           String
+  role           UserRole     @default(ADMIN)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  auditLogs      AuditLog[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model EnabledService {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  serviceKey     String       @map("service_key") // e.g. "change-tracking", "incident-detection", "security-drift", "ai-assistant"
+  enabled        Boolean      @default(true)
+  enabledAt      DateTime     @default(now()) @map("enabled_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, serviceKey])
+  @@index([organizationId])
+  @@map("enabled_services")
+}
+
+model AwsConnection {
+  id             String           @id @default(uuid())
+  organizationId String           @map("organization_id")
+  accountAlias   String           @default("AWS Production") @map("account_alias")
+  awsAccountId   String?          @map("aws_account_id")
+  roleArn        String?          @map("role_arn")
+  externalId     String           @map("external_id")
+  status         ConnectionStatus @default(PENDING)
+  lastSyncAt     DateTime?        @map("last_sync_at")
+  errorMessage   String?          @map("error_message")
+  regions        String[]         @default(["us-east-1"])
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("aws_connections")
+}
+
+model Service {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  name           String       // e.g. "payment-service", "order-service"
+  environment    Environment  @default(PROD)
+  currentVersion String?      @map("current_version")
+  healthStatus   String       @default("HEALTHY") @map("health_status") // HEALTHY, DEGRADED, CRITICAL
+  latencyMs      Float        @default(120.0) @map("latency_ms")
+  errorRate      Float        @default(0.05) @map("error_rate")
+  lastDeployment DateTime?    @map("last_deployment")
+  dependencies   String[]     @default([])
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  resources      Resource[]
+  changes        Change[]
+  incidents      Incident[]
+
+  @@unique([organizationId, name, environment])
+  @@index([organizationId])
+  @@map("services")
+}
+
+model Resource {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  serviceId      String?      @map("service_id")
+  arn            String
+  name           String
+  resourceType   String       @map("resource_type") // e.g. "AWS::ECS::Service", "AWS::RDS::DBInstance"
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service        Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([organizationId, arn])
+  @@map("resources")
+}
+
+model Event {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  sourceEventId  String?      @map("source_event_id")
+  eventType      String       @map("event_type")
+  source         String       // "aws.cloudtrail", "aws.cloudwatch", "system"
+  serviceName    String?      @map("service_name")
+  resourceName   String?      @map("resource_name")
+  environment    Environment  @default(PROD)
+  severity       Severity     @default(LOW)
+  summary        String
+  timestamp      DateTime     @default(now())
+  metadata       Json         @default("{}")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  incidentEvents IncidentEvent[]
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, serviceName])
+  @@map("events")
+}
+
+model Change {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  serviceId      String?      @map("service_id")
+  serviceName    String       @map("service_name")
+  changeType     ChangeType   @map("change_type")
+  title          String
+  description    String?
+  author         String       @default("system")
+  environment    Environment  @default(PROD)
+  timestamp      DateTime     @default(now())
+  riskScore      Float        @default(0.0) @map("risk_score")
+  riskLevel      String       @default("LOW") @map("risk_level") // LOW, MEDIUM, HIGH
+  diff           Json         @default("{}")
+  metadata       Json         @default("{}")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service        Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  incidentChanges IncidentChange[]
+  riskScoreRecord RiskScore?
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, serviceName])
+  @@map("changes")
+}
+
+model Metric {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  serviceName    String       @map("service_name")
+  metricName     String       @map("metric_name") // "latency", "error_rate", "cpu", "memory"
+  value          Float
+  unit           String       @default("ms")
+  timestamp      DateTime     @default(now())
+  isAnomaly      Boolean      @default(false) @map("is_anomaly")
+  environment    Environment  @default(PROD)
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, serviceName, metricName])
+  @@map("metrics")
+}
+
+model Log {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  serviceName    String       @map("service_name")
+  severity       Severity     @default(LOW)
+  message        String
+  timestamp      DateTime     @default(now())
+  metadata       Json         @default("{}")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, serviceName])
+  @@map("logs")
+}
+
+model Incident {
+  id                  String         @id @default(uuid())
+  organizationId      String         @map("organization_id")
+  serviceId           String?        @map("service_id")
+  serviceName         String         @map("service_name")
+  title               String
+  description         String
+  severity            Severity       @default(MEDIUM)
+  status              IncidentStatus @default(OPEN)
+  riskScore           Float          @default(50.0) @map("risk_score")
+  riskLevel           String         @default("MEDIUM") @map("risk_level")
+  probableCauseChange String?        @map("probable_cause_change")
+  confidenceScore     Float          @default(0.0) @map("confidence_score")
+  explanation         String?
+  startedAt           DateTime       @default(now()) @map("started_at")
+  resolvedAt          DateTime?      @map("resolved_at")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  organization        Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service             Service?       @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  incidentChanges     IncidentChange[]
+  incidentEvents      IncidentEvent[]
+  aiAnalyses          AiAnalysis[]
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, serviceName])
+  @@index([organizationId, status])
+  @@map("incidents")
+}
+
+model IncidentChange {
+  id               String       @id @default(uuid())
+  incidentId       String       @map("incident_id")
+  changeId         String       @map("change_id")
+  correlationScore Float        @default(0.0) @map("correlation_score")
+  isProbableCause  Boolean      @default(false) @map("is_probable_cause")
+  explanation      String?
+
+  incident         Incident     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  change           Change       @relation(fields: [changeId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, changeId])
+  @@index([incidentId])
+  @@index([changeId])
+  @@map("incident_changes")
+}
+
+model IncidentEvent {
+  id         String   @id @default(uuid())
+  incidentId String   @map("incident_id")
+  eventId    String   @map("event_id")
+
+  incident   Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  event      Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, eventId])
+  @@index([incidentId])
+  @@index([eventId])
+  @@map("incident_events")
+}
+
+model RiskScore {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  changeId       String       @unique @map("change_id")
+  overallScore   Float        @map("overall_score")
+  riskLevel      String       @map("risk_level") // LOW, MEDIUM, HIGH
+  breakdown      Json         // array of { factor, score, weight, contribution, description }
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  change         Change       @relation(fields: [changeId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("risk_scores")
+}
+
+model SecurityFinding {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  title          String
+  ruleType       String       @map("rule_type") // IAM_POLICY, OPEN_SECURITY_GROUP, S3_PUBLIC, CONFIG_DRIFT
+  severity       Severity     @default(HIGH)
+  resourceArn    String       @map("resource_arn")
+  resourceName   String       @map("resource_name")
+  serviceName    String?      @map("service_name")
+  description    String
+  recommendedFix String       @map("recommended_fix")
+  isReviewed     Boolean      @default(false) @map("is_reviewed")
+  reviewedAt     DateTime?    @map("reviewed_at")
+  expectedConfig Json?        @map("expected_config")
+  currentConfig  Json?        @map("current_config")
+  timestamp      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, isReviewed])
+  @@map("security_findings")
+}
+
+model AiAnalysis {
+  id                 String       @id @default(uuid())
+  organizationId     String       @map("organization_id")
+  incidentId         String       @map("incident_id")
+  summary            String
+  probableRootCause  String       @map("probable_root_cause")
+  confidence         Float        @default(0.85)
+  evidence           String[]     @default([])
+  recommendations    String[]     @default([])
+  rawPrompt          String?      @map("raw_prompt")
+  rawResponse        String?      @map("raw_response")
+  isCached           Boolean      @default(true) @map("is_cached")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  incident           Incident     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, incidentId])
+  @@map("ai_analyses")
+}
+
+model Notification {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  title          String
+  message        String
+  severity       Severity     @default(LOW)
+  read           Boolean      @default(false)
+  link           String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  userId         String?      @map("user_id")
+  action         String       // "AWS_ROLE_CONNECTED", "SERVICE_ENABLED", "ROLE_UPDATED"
+  details        Json         @default("{}")
+  ipAddress      String?      @map("ip_address")
+  timestamp      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, timestamp])
+  @@map("audit_logs")
+}

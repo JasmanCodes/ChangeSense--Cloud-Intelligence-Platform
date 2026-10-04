@@ -1,0 +1,13 @@
+{
+  "name": "changesense-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev": "npm run dev:backend",
+    "test:backend": "npm --prefix backend run test",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build"
+  }
+}
